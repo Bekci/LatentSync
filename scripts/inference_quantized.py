@@ -23,6 +23,10 @@ from accelerate.utils import set_seed
 from latentsync.whisper.audio2feature import Audio2Feature
 from DeepCache import DeepCacheSDHelper
 
+from diffusers import TorchAoConfig
+from torchao.quantization.quant_api import quantize_, int8_weight_only
+
+
 
 def main(config, args):
     if not os.path.exists(args.video_path):
@@ -32,7 +36,8 @@ def main(config, args):
 
     # Check if the GPU supports float16
     is_fp16_supported = torch.cuda.is_available() and torch.cuda.get_device_capability()[0] > 7
-    dtype = torch.float16 if is_fp16_supported else torch.float32
+    #dtype = torch.float16 if is_fp16_supported else torch.float32
+    dtype = torch.bfloat16
 
     print(f"Input video path: {args.video_path}")
     print(f"Input audio path: {args.audio_path}")
@@ -53,18 +58,26 @@ def main(config, args):
         num_frames=config.data.num_frames,
         audio_feat_length=config.data.audio_feat_length,
     )
+    quantization_config = TorchAoConfig("int8wo")
 
-    vae = AutoencoderKL.from_pretrained("stabilityai/sd-vae-ft-mse", torch_dtype=dtype)
+    vae = AutoencoderKL.from_pretrained(
+      "stabilityai/sd-vae-ft-mse", 
+      quantization_config=quantization_config,
+      torch_dtype=torch.bfloat16)
     vae.config.scaling_factor = 0.18215
     vae.config.shift_factor = 0
 
     unet, _ = UNet3DConditionModel.from_pretrained(
         OmegaConf.to_container(config.model),
         args.inference_ckpt_path,
-        device="cpu",
+        device="cpu"
     )
 
-    unet = unet.to(dtype=dtype)
+    quantize_(unet, int8_weight_only())
+    
+    #unet = unet.to(dtype=dtype)
+    unet = unet.to(dtype=torch.bfloat16)
+    
 
     pipeline = LipsyncPipeline(
         vae=vae,
