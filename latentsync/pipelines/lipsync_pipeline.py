@@ -4,6 +4,7 @@ import inspect
 import math
 import os
 import shutil
+import time
 from typing import Callable, List, Optional, Union
 import subprocess
 
@@ -329,6 +330,7 @@ class LipsyncPipeline(DiffusionPipeline):
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
         callback: Optional[Callable[[int, int, torch.FloatTensor], None]] = None,
         callback_steps: Optional[int] = 1,
+        print_runtime: bool = False,
         **kwargs,
     ):
         is_train = self.unet.training
@@ -361,18 +363,36 @@ class LipsyncPipeline(DiffusionPipeline):
         # 4. Prepare extra step kwargs.
         extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
 
+        start = time.time()
         whisper_feature = self.audio_encoder.audio2feat(audio_path)
+        end = time.time()
+        
+        if print_runtime:
+            print(f"Encoding audio took {end-start} seconds")
+        
+        start = time.time()
         whisper_chunks = self.audio_encoder.feature2chunks(feature_array=whisper_feature, fps=video_fps)
+        end = time.time()
+
+        if print_runtime:
+            print(f"Chunking audio took {end-start} seconds")
+
 
         audio_samples = read_audio(audio_path)
         video_frames = read_video(video_path, use_decord=False)
 
+        start = time.time()
         video_frames, faces, boxes, affine_matrices = self.loop_video(whisper_chunks, video_frames)
+        end = time.time()
+
+        if print_runtime:
+            print(f"Preparing video took {end-start} seconds")
 
         synced_video_frames = []
 
         num_channels_latents = self.vae.config.latent_channels
 
+        start = time.time()
         # Prepare latent variables
         all_latents = self.prepare_latents(
             len(whisper_chunks),
@@ -383,6 +403,10 @@ class LipsyncPipeline(DiffusionPipeline):
             device,
             generator,
         )
+        end = time.time()
+
+        if print_runtime:
+            print(f"Preparing video took {end-start} seconds")
 
         num_inferences = math.ceil(len(whisper_chunks) / num_frames)
         for i in tqdm.tqdm(range(num_inferences), desc="Doing inference..."):
@@ -457,7 +481,12 @@ class LipsyncPipeline(DiffusionPipeline):
             )
             synced_video_frames.append(decoded_latents)
 
+        start = time.time()
         synced_video_frames = self.restore_video(torch.cat(synced_video_frames), video_frames, boxes, affine_matrices)
+        end = time.time()
+
+        if print_runtime:
+            print(f"Restroing video took {end-start} seconds")
 
         audio_samples_remain_length = int(synced_video_frames.shape[0] / video_fps * audio_sample_rate)
         audio_samples = audio_samples[:audio_samples_remain_length].cpu().numpy()
