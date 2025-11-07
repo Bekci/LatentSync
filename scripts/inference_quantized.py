@@ -34,9 +34,6 @@ def main(config, args):
     if not os.path.exists(args.audio_path):
         raise RuntimeError(f"Audio path '{args.audio_path}' not found")
 
-    # Check if the GPU supports float16
-    is_fp16_supported = torch.cuda.is_available() and torch.cuda.get_device_capability()[0] > 7
-    #dtype = torch.float16 if is_fp16_supported else torch.float32
     dtype = torch.bfloat16
 
     print(f"Input video path: {args.video_path}")
@@ -74,9 +71,7 @@ def main(config, args):
     )
 
     quantize_(unet, int8_weight_only())
-    
-    #unet = unet.to(dtype=dtype)
-    unet = unet.to(dtype=torch.bfloat16)
+    unet = unet.to(dtype=dtype)
     
 
     pipeline = LipsyncPipeline(
