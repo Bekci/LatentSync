@@ -5,6 +5,11 @@ import numpy as np
 import torch
 import os
 from pathlib import Path
+import math
+from transformers import WhisperProcessor, WhisperModel
+import soundfile as sf
+from .whisper.tokenizer import get_tokenizer
+from phonemizer import phonemize
 
 
 class Audio2Feature:
@@ -23,6 +28,10 @@ class Audio2Feature:
         self.num_frames = num_frames
         self.embedding_dim = self.model.dims.n_audio_state
         self.audio_feat_length = audio_feat_length
+
+        self.processor = WhisperProcessor.from_pretrained("openai/whisper-tiny")
+        self.hg_model = WhisperModel.from_pretrained("openai/whisper-tiny")
+
 
     def get_sliced_feature(self, feature_array, vid_idx, fps=25):
         """
@@ -146,6 +155,41 @@ class Audio2Feature:
             selected_feature_list.append(selected_feature)
         mel_overlap = torch.stack(selected_feature_list)
         return mel_overlap
+
+
+    def audio2feat_phenome(self, audio_path):
+
+        audio, sr = sf.read(audio_path)
+        inputs = self.processor(audio, sampling_rate=sr, return_tensors="pt")
+
+        with torch.no_grad():
+            encoder_embeddings = self.hg_model.encoder(inputs["input_features"])
+
+        res = self.model.transcribe(audio_path)
+        result_text = res['text'].strip() 
+        phonemes = phonemize(result_text, language='en-us', backend='espeak')
+
+        individual_phonemes = [ph for ph in phonemes.split(' ') if len(ph) != 0]
+
+        return self._split_embeddings_by_phenome(encoder_embeddings.last_hidden_state, individual_phonemes)
+
+    def _split_embeddings_by_phenome(self, embeddings, phenomes):
+        
+        phonemes_char_lengths = [len(ph) for ph in phenomes]
+
+        total_phoneme_length = np.sum(phonemes_char_lengths)
+        embedding_per_phoneme = math.floor(embeddings.shape[1] / total_phoneme_length)
+
+        last_index = 0
+        ph_embeddings = []
+        
+        for ph in phenomes:
+            current_embedding_length = len(ph) * embedding_per_phoneme
+            current_embedding = embeddings[:,last_index:(last_index+current_embedding_length),:]
+            last_index += current_embedding_length
+            ph_embeddings.append(current_embedding)
+
+        return ph_embeddings
 
 
 if __name__ == "__main__":

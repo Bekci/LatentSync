@@ -280,32 +280,8 @@ class LipsyncPipeline(DiffusionPipeline):
 
     def loop_video(self, whisper_chunks: list, video_frames: np.ndarray):
         # If the audio is longer than the video, we need to loop the video
-        if len(whisper_chunks) > len(video_frames):
-            faces, boxes, affine_matrices = self.affine_transform_video(video_frames)
-            num_loops = math.ceil(len(whisper_chunks) / len(video_frames))
-            loop_video_frames = []
-            loop_faces = []
-            loop_boxes = []
-            loop_affine_matrices = []
-            for i in range(num_loops):
-                if i % 2 == 0:
-                    loop_video_frames.append(video_frames)
-                    loop_faces.append(faces)
-                    loop_boxes += boxes
-                    loop_affine_matrices += affine_matrices
-                else:
-                    loop_video_frames.append(video_frames[::-1])
-                    loop_faces.append(faces.flip(0))
-                    loop_boxes += boxes[::-1]
-                    loop_affine_matrices += affine_matrices[::-1]
-
-            video_frames = np.concatenate(loop_video_frames, axis=0)[: len(whisper_chunks)]
-            faces = torch.cat(loop_faces, dim=0)[: len(whisper_chunks)]
-            boxes = loop_boxes[: len(whisper_chunks)]
-            affine_matrices = loop_affine_matrices[: len(whisper_chunks)]
-        else:
-            video_frames = video_frames[: len(whisper_chunks)]
-            faces, boxes, affine_matrices = self.affine_transform_video(video_frames)
+        video_frames = video_frames[: len(whisper_chunks)]
+        faces, boxes, affine_matrices = self.affine_transform_video(video_frames)
 
         return video_frames, faces, boxes, affine_matrices
 
@@ -361,13 +337,15 @@ class LipsyncPipeline(DiffusionPipeline):
         # 4. Prepare extra step kwargs.
         extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
 
-        whisper_feature = self.audio_encoder.audio2feat(audio_path)
-        whisper_chunks = self.audio_encoder.feature2chunks(feature_array=whisper_feature, fps=video_fps)
+        #whisper_feature = self.audio_encoder.audio2feat(audio_path)
+        #whisper_chunks = self.audio_encoder.feature2chunks(feature_array=whisper_feature, fps=video_fps)
+        whisper_phenome_features = self.audio_encoder.audio2feat_phenome(audio_path)
+        num_whisper_chunks = np.sum([chunk.shape[1] for chunk in whisper_phenome_features])
 
         audio_samples = read_audio(audio_path)
         video_frames = read_video(video_path, use_decord=False)
 
-        video_frames, faces, boxes, affine_matrices = self.loop_video(whisper_chunks, video_frames)
+        video_frames, faces, boxes, affine_matrices = self.loop_video(video_frames)
 
         synced_video_frames = []
 
@@ -375,7 +353,7 @@ class LipsyncPipeline(DiffusionPipeline):
 
         # Prepare latent variables
         all_latents = self.prepare_latents(
-            len(whisper_chunks),
+            len(num_whisper_chunks),
             num_channels_latents,
             height,
             width,
@@ -384,18 +362,20 @@ class LipsyncPipeline(DiffusionPipeline):
             generator,
         )
 
-        num_inferences = math.ceil(len(whisper_chunks) / num_frames)
+        frame_per_phenome_char = num_whisper_chunks / len(video_frames)
+
+        num_inferences = len(whisper_phenome_features)
         for i in tqdm.tqdm(range(num_inferences), desc="Doing inference..."):
-            if self.unet.add_audio_layer:
-                audio_embeds = torch.stack(whisper_chunks[i * num_frames : (i + 1) * num_frames])
-                audio_embeds = audio_embeds.to(device, dtype=weight_dtype)
-                if do_classifier_free_guidance:
-                    null_audio_embeds = torch.zeros_like(audio_embeds)
-                    audio_embeds = torch.cat([null_audio_embeds, audio_embeds])
-            else:
-                audio_embeds = None
-            inference_faces = faces[i * num_frames : (i + 1) * num_frames]
-            latents = all_latents[:, :, i * num_frames : (i + 1) * num_frames]
+            audio_embeds = whisper_phenome_features[i]
+            num_current_frames = int(frame_per_phenome_char*audio_embeds.shape[1])
+            audio_embeds = audio_embeds.to(device, dtype=weight_dtype)
+            if do_classifier_free_guidance:
+                null_audio_embeds = torch.zeros_like(audio_embeds)
+                audio_embeds = torch.cat([null_audio_embeds, audio_embeds])
+
+            inference_faces = faces[i * num_current_frames : (i + 1) * num_current_frames]
+            latents = all_latents[:, :, i * num_current_frames : (i + 1) * num_current_frames]
+            
             ref_pixel_values, masked_pixel_values, masks = self.image_processor.prepare_masks_and_masked_images(
                 inference_faces, affine_transform=False
             )
